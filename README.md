@@ -1,2 +1,3 @@
-# F21 EECS595 Umich
+# UMich F21 EECS595 
 Natural Language Processing
+
