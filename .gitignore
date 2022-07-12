@@ -1,0 +1,8 @@
+find . -size + 100M
+*.pkl
+**/*.pkl
+
+*.pt
+**/*.pt
+*.zip
+**/*.zip
