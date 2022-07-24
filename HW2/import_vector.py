@@ -96,15 +96,12 @@ def prepare_seq(seq_list, dictionary):
     for batch in seq_list:
         empty_lst = [dictionary[tag] for tag in batch]
         embedded.append(empty_lst)
+    # convert to a list of tensor
     embedded = [torch.tensor(seq) for seq in embedded]
     padded = nn.utils.rnn.pad_sequence(embedded,
                                        batch_first=True,
                                        padding_value=dictionary['<PAD>'])
-    print(padded)
     return padded
-
-
-
 
 
 class ToyLSTM(nn.Module):
@@ -176,57 +173,38 @@ class ToyLSTM(nn.Module):
     def loss(self, Y_hat, Y):
         # NLL(tensor log_softmax output, target index list)
         # flatten out all labels
-        Y = prepare_seq(Y, self.tags)
-        Y_length = Y_hat.size(1)  # because Y_hat is already padded
-
+        Y = prepare_seq(Y, tags)
         Y = Y.flatten()
         # flatten all predictions
-        Y_hat = Y_hat.view(-1, self.nb_tags)
+        Y_hat = Y_hat.view(-1, len(tags) - 1)
         # create a mask that filter '<PAD>;
-        tag_token = self.tags['<PAD>']  # todo: 输入应该是padded过的文字 seq
-        mask = (Y != tag_token).float().unsqueeze(1)
-        Y_hat = mask * Y_hat  # (batch_size * seq_len, nb_tags) <==> (N*L, C)
-        nllloss = nn.NLLLoss(Y_hat, Y)
+        tag_token = tags['<PAD>']  
+        mask = (Y < tag_token)
+        mask_idx = torch.nonzero(mask.float())
+        Y_hat = Y_hat[mask_idx].squeeze(1)
+        Y = Y[mask_idx].squeeze(1)
+        loss = nn.NLLLoss()
+        result = loss(Y_hat, Y)
+        return result
 
-        return nllloss
 
-
-def unit_test(input, embedded=False):
-    # specify hyperparameters
-    num_layers = 2
-    nb_tags = 10
-    if embedded:
-        input_size = 50
-        input = embedding_layer_const(input)
-        # need to squeeze pos 2 to make it 3D, after embedding
-        input = input.squeeze(2)
-        padding_idx = torch.zeros(input_size)
-    else:
-        input_size = input.size()[-1]
-    h0 = torch.zeros(num_layers, batch_size, nb_lstm_units)
-    c0 = torch.zeros(num_layers, batch_size, nb_lstm_units)
-    lstm = nn.LSTM(input_size=input_size,
-                   hidden_size=nb_lstm_units,
-                   num_layers=num_layers,
-                   batch_first=True)
-    fc_linear = nn.Linear(nb_lstm_units, nb_tags)
-    input = input.float()
-    # pack the padded sequence
-    input_lengths = torch.all(input != padding_idx, dim=2).sum(dim=1).flatten()
-    input = nn.utils.rnn.pack_padded_sequence(input, input_lengths, batch_first=True, enforce_sorted=False)
-    out, (h0, c0) = lstm(input, (h0, c0))
-    # unpacking the padded sequence
-    out, len_unpacked = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
-    print(out.size())
-    # linear layer
-    out = out.view(-1, out.size(-1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
-    out = fc_linear(out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
-
-    # reshape into (batch_size,  seq_len, nb_lstm_units)
-    out = out.view(batch_size, -1, nb_tags)
-    # softmax to get the result
-    Y_hat = F.log_softmax(out.float(), dim=2)
-    return Y_hat
+def unit_test(Y_hat, Y):
+    # NLL(tensor log_softmax output, target index list)
+    # flatten out all labels
+    Y = prepare_seq(Y, tags)
+    Y = Y.flatten()
+    # flatten all predictions
+    Y_hat = Y_hat.view(-1, len(tags) - 1)
+    # create a mask that filter '<PAD>;
+    tag_token = tags['<PAD>']
+    mask = (Y < tag_token)
+    mask_idx = torch.nonzero(mask.float())
+    Y_hat = Y_hat[mask_idx].squeeze(1)
+    Y = Y[mask_idx].squeeze(1)
+    loss = nn.NLLLoss()
+    result = loss(Y_hat, Y)
+    print(result)
+    return result
 
 
 class MyTestCase(unittest.TestCase):
@@ -239,7 +217,7 @@ if __name__ == '__main__':
     df = pd.read_pickle('glove.pkl')
     _, words_lst, tags_lst = split_text("wsj1-18.training")
     tags = dict(zip(sorted(set(tags_lst)), np.arange(len(set(tags_lst)))))
-    tags['<PAD>'] = 912344
+    tags['<PAD>'] = len(tags)
     weighted_matrix = torch.load("weighed_matrix.pt")
     embedding_layer_const = create_emb_layer(weighted_matrix)
     nb_layers = 2
@@ -266,11 +244,12 @@ if __name__ == '__main__':
                               [8],
                               [9],
                               [10]]])
+    Y = [["CC", "CD", "DT"], ["EX"], ["JJ", "IN", "JJ", "JJR"]]
     model = ToyLSTM(nb_layers=nb_layers,
                     batch_size=batch_size,
                     nb_lstm_units=nb_lstm_units,
                     embedding_layer=embedding_layer_const)
     out = model(batch_in)
-
+    unit_test(out, Y)
     # out = unit_test(batch_in, embedded=True)
     # unittest.main()
