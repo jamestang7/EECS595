@@ -34,6 +34,7 @@ def load_embedding(filename='glove.6B.50d.txt'):
     df.to_pckle("glove.pkl")
     return df, words
 
+
 def word_to_embedding(target_vocab, pre_train):
     """
 
@@ -86,16 +87,35 @@ def split_text(text_file):
     return result_dic, keys, values
 
 
+def prepare_seq(seq_list, dictionary):
+    """
+    embedding and padded a sequence, given its relating dictionary
+    :return: padded sequence in numerical numbers
+    """
+    embedded = []
+    for batch in seq_list:
+        empty_lst = [dictionary[tag] for tag in batch]
+        embedded.append(empty_lst)
+    embedded = [torch.tensor(seq) for seq in embedded]
+    padded = nn.utils.rnn.pad_sequence(embedded,
+                                       batch_first=True,
+                                       padding_value=dictionary['<PAD>'])
+    print(padded)
+    return padded
+
+
+
+
+
 class ToyLSTM(nn.Module):
     def __init__(self, nb_layers, batch_size, nb_lstm_units, embedding_layer, embedding_dim=50):
         super(ToyLSTM, self).__init__()
         self.hidden_layer = None
         self.result_dic, self.words_lst, self.tags_lst = split_text("wsj1-18.training")
-        self.vocab = dict(zip(sorted(set(self.words_lst)), np.arange(1, len(set(self.words_lst)) + 1)))
-        self.tags = dict(zip(sorted(set(self.tags_lst)), np.arange(1, len(set(self.tags_lst)) + 1)))
-        self.vocab['<PAD>'] = 0
-        self.tags['<PAD>'] = 0
-        self.padding_idx = 912344
+        self.vocab = dict(zip(sorted(set(self.words_lst)), np.arange(len(set(self.words_lst)))))
+        self.tags = dict(zip(sorted(set(self.tags_lst)), np.arange(len(set(self.tags_lst)))))
+        self.vocab['<PAD>'] = len(set(self.words_lst))
+        self.tags['<PAD>'] = len(set(self.tags_lst))
         self.nb_layers = nb_layers
         self.batch_size = batch_size
         self.nb_lstm_units = nb_lstm_units
@@ -120,73 +140,55 @@ class ToyLSTM(nn.Module):
         # output layer which project back to tag space
         self.hidden_to_tag = nn.Linear(self.nb_lstm_units, self.nb_tags)
 
-    def forward(self, X, X_lengths):
-        # reset the LSTM hidden state. Must be done before you run a new batch. Otherwise LSTM will treat a batch as a
-        # continuation of a sequence
-        h0 = torch.rand(self.nb_layers, X.size(0), self.nb_lstm_units)
-        c0 = torch.rand(self.nb_layers, X.size(0), self.nb_lstm_units)
+    def forward(self, input):
+        # init hidden layers and input sequence length
+        h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
+        c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
+        input_lengths = torch.all(input != padding_idx, dim=2).sum(dim=1).flatten()
 
         # -------------------
         # 1. embed the input
         # Dim transformation: (batch_size, seq_len, 1) -> (batch_size, seq_len, embedding_dim)
-        X = self.embedding_layer(X)
-
+        input = self.embedding_layer(input)
+        input = input.squeeze(2)
         # -------------------
         # 2.  Run through LSTM
-        ### ASSUMPTION: already padded
         # Dim transformation: (B,L, embedding_dim) -> (B, L, LSTM_units)
-        # pack padded items so that they are not shown to the LSTM
-        ### creating a mask that filter all non-zeros(<PAD>) in the tensor
-        X = torch.nn.utils.rnn.pack_padded_sequence(X, X_lengths, batch_first=True, enforce_sorted=False)
+        input = torch.nn.utils.rnn.pack_padded_sequence(input, input_lengths, batch_first=True, enforce_sorted=False)
         # now run through LSTM
-        print("X is PackedSequence: {}".format(isinstance(X, torch.nn.utils.rnn.PackedSequence)))
-        X = X.float()
-        X, _ = self.lstm(X, (h0, c0))  # undo the packing operation
-        # X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True)
+        input = input.float()
+        out, (h0, c0) = self.lstm(input, (h0, c0))  # undo the packing operation
+        out, len_unpacked = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+        # -------------------
+        # 3.  Apply FC linear layer
+        # linear layer
+        out = out.view(-1,
+                       out.size(-1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
+        out = self.hidden_to_tag(out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
 
-        # # -------------------
-        # # 3. Project to the tag space
-        # # Dim transformation: (batch_size, seq_len, nb_lstm_units) -> (batch_size, seq_len, tag_nb)
-        # X = X.contiguous()
-        # # reshape data so that it goes to the linear layer
-        # X = X.view(-1, X.shape[2])
-        # X = self.hidden_to_tag(X)
-        #
-        # # -------------------
-        # # 4. Create softmax activation bc we are doing classification
-        # # Dim transformation: (batch_size * seq_len, tag_nb, batch_size, seq_len, tag_nb)
-        # X = F.log_softmax(X, dim=1)
-        # X = X.view(batch_size, seq_len, self.nb_tags)
-
-        Y_hat = X
+        # reshape into (batch_size,  seq_len, nb_lstm_units)
+        out = out.view(batch_size, -1, self.nb_tags)
+        # -------------------
+        # 4.  softmax to transfer it to probability
+        Y_hat = F.log_softmax(out.float(), dim=2)
         return Y_hat
 
     def loss(self, Y_hat, Y):
-        # TRICK 3 ********************************
-        # before we calculate the negative log likelihood, we need to mask out the activations
-        # this means we don't want to take into account padded items in the output vector
-        # the simplest way to think about this is to flatten ALL sequences into a REALLY long sequence
-        # and calculate the loss on that.
+        # NLL(tensor log_softmax output, target index list)
+        # flatten out all labels
+        Y = prepare_seq(Y, self.tags)
+        Y_length = Y_hat.size(1)  # because Y_hat is already padded
 
-        # flatten all labels
-        Y = Y.view(-1)
-
+        Y = Y.flatten()
         # flatten all predictions
-        Y_hat = Y_hat.view_as(Y)
+        Y_hat = Y_hat.view(-1, self.nb_tags)
+        # create a mask that filter '<PAD>;
+        tag_token = self.tags['<PAD>']  # todo: 输入应该是padded过的文字 seq
+        mask = (Y != tag_token).float().unsqueeze(1)
+        Y_hat = mask * Y_hat  # (batch_size * seq_len, nb_tags) <==> (N*L, C)
+        nllloss = nn.NLLLoss(Y_hat, Y)
 
-        # create a mask by filtering out all the tokens that are not the padding token
-        tag_pad_token = self.tags['<PAD>']
-        mask = (Y > tag_pad_token).float()
-
-        # count how many tokens we have
-        nb_tokens = int(torch.sum(mask).item())
-
-        # pick the value for the label and zero out the rest with the mask
-        Y_hat = Y_hat * mask
-
-        # compute the cross entropy loss which ignore all <PAD> tokens
-        ce_loss = -torch.sum(Y_hat) / nb_tokens
-        return ce_loss
+        return nllloss
 
 
 def unit_test(input, embedded=False):
@@ -210,12 +212,12 @@ def unit_test(input, embedded=False):
     fc_linear = nn.Linear(nb_lstm_units, nb_tags)
     input = input.float()
     # pack the padded sequence
-    input_lengths =torch.all(input != padding_idx, dim=2).sum(dim=1).flatten()
+    input_lengths = torch.all(input != padding_idx, dim=2).sum(dim=1).flatten()
     input = nn.utils.rnn.pack_padded_sequence(input, input_lengths, batch_first=True, enforce_sorted=False)
     out, (h0, c0) = lstm(input, (h0, c0))
     # unpacking the padded sequence
     out, len_unpacked = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
-
+    print(out.size())
     # linear layer
     out = out.view(-1, out.size(-1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
     out = fc_linear(out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
@@ -224,7 +226,6 @@ def unit_test(input, embedded=False):
     out = out.view(batch_size, -1, nb_tags)
     # softmax to get the result
     Y_hat = F.log_softmax(out.float(), dim=2)
-
     return Y_hat
 
 
@@ -236,7 +237,9 @@ class MyTestCase(unittest.TestCase):
 if __name__ == '__main__':
     ### transform text into list of words
     df = pd.read_pickle('glove.pkl')
-    _, words_lst, __ = split_text("wsj1-18.training")
+    _, words_lst, tags_lst = split_text("wsj1-18.training")
+    tags = dict(zip(sorted(set(tags_lst)), np.arange(len(set(tags_lst)))))
+    tags['<PAD>'] = 912344
     weighted_matrix = torch.load("weighed_matrix.pt")
     embedding_layer_const = create_emb_layer(weighted_matrix)
     nb_layers = 2
@@ -244,6 +247,11 @@ if __name__ == '__main__':
     batch_size = 3
     seq_len = 4
     padding_idx = 912344
+    toy_training = [
+        ("The dog ate the apple".split(), ["DET", "NN", "V", "DET", "NN"]),
+        ("Everybody read that book".split(), ["NN", "V", "DET", "NN"])
+    ]
+
     batch_in = torch.tensor([[[4],
                               [5],
                               [912344],
@@ -258,10 +266,11 @@ if __name__ == '__main__':
                               [8],
                               [9],
                               [10]]])
-    # model = ToyLSTM(nb_layers=nb_layers,
-    #                 batch_size=batch_size,
-    #                 nb_lstm_units=nb_lstm_units,
-    #                 embedding_layer=embedding_layer_const)
+    model = ToyLSTM(nb_layers=nb_layers,
+                    batch_size=batch_size,
+                    nb_lstm_units=nb_lstm_units,
+                    embedding_layer=embedding_layer_const)
+    out = model(batch_in)
 
-    out = unit_test(batch_in, embedded=True)
+    # out = unit_test(batch_in, embedded=True)
     # unittest.main()
