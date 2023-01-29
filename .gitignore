@@ -1,6 +1,10 @@
 find . -size + 100M
 *.pkl
 **/*.pkl
+*/*.training
+*/*.testing
+*/*.truth
+*/*.txt
 
 *.pt
 **/*.pt
