@@ -1,7 +1,6 @@
 import argparse
 import csv
 import os
-import os
 import pickle
 import random
 import sys
@@ -14,14 +13,16 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.data.dataloader as dataloader
+from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score
 from torch.autograd import Variable
+
 SEED = 1234
 
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
+
 
 def load_embedding(filename='glove.6B.50d.txt'):
     """
@@ -113,7 +114,6 @@ def prepare_seq(seq_list, dictionary):
     return padded
 
 
-
 class LSTM(nn.Module):
     def __init__(self, nb_layers, batch_size, nb_lstm_units, embedding_layer,
                  bidirectional=False,
@@ -121,7 +121,8 @@ class LSTM(nn.Module):
                  embedding_dim=50):
         super(LSTM, self).__init__()
         self.hidden_layer = None
-        self.result_dic, self.words_lst, self.tags_lst = split_text("wsj1-18.training")
+        self.result_dic, self.words_lst, self.tags_lst = split_text(
+            "wsj1-18.training")
         self.vocab = dict(zip(sorted(set(self.words_lst)),
                               np.arange(len(set(self.words_lst)))))
         self.tags = dict(zip(sorted(set(self.tags_lst)),
@@ -164,7 +165,7 @@ class LSTM(nn.Module):
         # init hidden layers and input sequence length
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
         c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
-        input_lengths = torch.all(input != self.padding_idx, dim=2)\
+        input_lengths = torch.all(input != self.padding_idx, dim=2) \
             .sum(dim=1).flatten()
 
         # -------------------
@@ -189,8 +190,10 @@ class LSTM(nn.Module):
         # 3.  Apply FC linear layer
         # linear layer
         out = out.view(-1,
-                       out.size(-1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
-        out = self.hidden_to_tag(out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
+                       out.size(
+                           -1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
+        out = self.hidden_to_tag(
+            out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
 
         # reshape into (batch_size,  seq_len, nb_lstm_units)
         out = out.view(self.batch_size, -1, self.nb_tags)
@@ -202,7 +205,7 @@ class LSTM(nn.Module):
     def loss(self, Y_hat, Y):
         # NLL(tensor log_softmax output, target index list)
         # flatten out all labels
-        Y = prepare_seq(Y, self.tags)
+        Y = prepare_seq(Y, self.tags)  # convert labels into number by tag dict
         Y = Y.flatten()
         # flatten all predictions
         Y_hat = Y_hat.view(-1, len(self.tags) - 1)
@@ -217,26 +220,29 @@ class LSTM(nn.Module):
         return result
 
 
-def unit_test(Y_hat, Y):
-    # NLL(tensor log_softmax output, target index list)
-    # flatten out all labels
-    Y = prepare_seq(Y, tags)
-    Y = Y.flatten()
-    # flatten all predictions
-    Y_hat = Y_hat.view(-1, len(tags) - 1)
-    # create a mask that filter '<PAD>;
-    tag_token = tags['<PAD>']
-    mask = (Y < tag_token)
-    mask_idx = torch.nonzero(mask.float())
-    Y_hat = Y_hat[mask_idx].squeeze(1)
-    Y = Y[mask_idx].squeeze(1)
-    loss = nn.NLLLoss()
-    result = loss(Y_hat, Y)
-    print(result)
-    return result
+class TagDataset(Dataset):
+    def __init__(self, train=True):
+        """
+
+        :param train: bool, if True read training data, else read testing data
+        """
+        self.train = train
+        self.trainMap, self.trainX, self.trainY = split_text("wsj1-18.training")
+        self.testMap, self.testX, self.testY = split_text("wsj19-21.truth")
+
+    def __len__(self):
+        return len(self.trainY) if self.train else self.testY
+
+    def __getitem__(self, item):
+        if self.train:
+            return self.trainX[item], self.trainY[item]
+        else:
+            return self.testX[item], self.testY[item]
 
 
 # todo: prepare dataloader for text
+train_loader = DataLoader(TagDataset(train=True),
+                          )
 
 
 class MyTestCase(unittest.TestCase):
@@ -280,9 +286,7 @@ if __name__ == '__main__':
     model = LSTM(nb_layers=nb_layers,
                  batch_size=batch_size,
                  nb_lstm_units=nb_lstm_units,
-                 embedding_layer=embedding_layer_const)
-
+                 embedding_layer=embedding_layer_const,
+                 bidirectional=False)
     out = model(batch_in)
-
-    # out = unit_test(batch_in, embedded=True)
-    # unittest.main()
+    loss = model.loss(out, Y)
