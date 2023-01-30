@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+import torch.optim as optim
 from sklearn.metrics import accuracy_score
 from torch.autograd import Variable
 
@@ -162,6 +163,10 @@ class LSTM(nn.Module):
                                        , self.nb_tags)
 
     def forward(self, input):
+
+        # todo: transform input tuples of strings into list of indices
+
+
         # init hidden layers and input sequence length
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
         c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
@@ -227,11 +232,13 @@ class TagDataset(Dataset):
         :param train: bool, if True read training data, else read testing data
         """
         self.train = train
-        self.trainMap, self.trainX, self.trainY = split_text("wsj1-18.training")
-        self.testMap, self.testX, self.testY = split_text("wsj19-21.truth")
+        if self.train:
+            self.trainMap, self.trainX, self.trainY = split_text("wsj1-18.training")
+        else:
+            self.testMap, self.testX, self.testY = split_text("wsj19-21.truth")
 
     def __len__(self):
-        return len(self.trainY) if self.train else self.testY
+        return len(self.trainY) if self.train else len(self.testY)
 
     def __getitem__(self, item):
         if self.train:
@@ -240,9 +247,55 @@ class TagDataset(Dataset):
             return self.testX[item], self.testY[item]
 
 
-# todo: prepare dataloader for text
+batch_size = 32
+
+# todo: write customized collate_fn to get to equal size
 train_loader = DataLoader(TagDataset(train=True),
-                          )
+                          batch_size=batch_size,
+                          # num_workers=8, Mac M1 cannot use this
+                          shuffle=False)
+test_loader = DataLoader(TagDataset(train=False),
+                         batch_size=batch_size,
+                         # num_workers=8, Mac M1 cannot use this
+                         shuffle=False)
+
+
+# todo: accuracy computation
+def get_accuracy(model, train):
+    data = train_loader if train else test_loader
+
+    correct, total = 0, 0
+    for X, labels in data:
+        y_pred = model(X)
+
+
+def train(model, lr, momemtum, num_epoch=1):
+    optimizer = optim.SGD(lr=lr, momentum=momemtum)
+    iters, losses, train_acc, test_acc = [], [], [], []
+
+    # training
+    n = 0 # number of iterations
+    for epoch in range(num_epoch):
+        for batch_idx, (data, target) in enumerate(train_loader):
+            out = model(data)               # forward pass
+            loss = model.loss(out, target)  # compute the loss
+            loss.backward()                 # backwardpass (compute parameter updates)
+            optimizer.step()                # make the update to each parameter
+            optimizer.zero_grad()
+
+            if batch_idx % 1000 == 0:
+                print(f"Epoch: {epoch}; Batch: {batch_idx}; "
+                      f"Loss: {float(loss)/batch_size}")
+
+            # save the current training log
+            iters.append(n)
+            losses.append(float(loss) / batch_size)
+            train_acc.append(get_accuracy(model, train=True))
+            test_acc.append(get_accuracy(model, train=False))
+            n += 1
+
+
+
 
 
 class MyTestCase(unittest.TestCase):
