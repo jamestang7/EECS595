@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 import torch.optim as optim
 from sklearn.metrics import accuracy_score
 from torch.autograd import Variable
@@ -82,20 +83,30 @@ def create_emb_layer(weighted_matrix1, non_trainable=False):
     return emb_layer
 
 
-def split_text(text_file):
+def split_text(text_file, by_line=False):
     """
 
     :param text_file: training file
     :return: DIC, TOKENS and TAGS
 
     """
-    with open(text_file, mode="r") as file:
-        text_f = file.read()
-        text_f_lst = text_f.split()
-        file.close()
-    keys, values = text_f_lst[::2], text_f_lst[1::2]
-    result_dic = dict(zip(keys, values))
-    return result_dic, keys, values
+    if by_line == False:
+        with open(text_file, mode="r") as file:
+            text_f = file.read()
+            text_f_lst = text_f.split()
+            file.close()
+        keys, values = text_f_lst[::2], text_f_lst[1::2]
+        result_dic = dict(zip(keys, values))
+        return result_dic, keys, values
+    else:
+        with open(text_file, mode="r") as file:
+            text_f = file.read()
+            text_f_lst = text_f.splitlines()
+            file.close()
+        keys = [line.split()[::2] for line in text_f_lst]
+        values = [line.split()[1::2] for line in text_f_lst]
+        # result_dic = dict(zip(keys, values))
+        return keys, values
 
 
 def prepare_seq(seq_list, dictionary):
@@ -163,9 +174,7 @@ class LSTM(nn.Module):
                                        , self.nb_tags)
 
     def forward(self, input):
-
         # todo: transform input tuples of strings into list of indices
-
 
         # init hidden layers and input sequence length
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
@@ -233,9 +242,12 @@ class TagDataset(Dataset):
         """
         self.train = train
         if self.train:
-            self.trainMap, self.trainX, self.trainY = split_text("wsj1-18.training")
+
+            self.trainX, self.trainY = split_text(
+                "wsj1-18.training", by_line=True)
         else:
-            self.testMap, self.testX, self.testY = split_text("wsj19-21.truth")
+            self.testX, self.testY = split_text("wsj19-21.truth",
+                                                by_line=True)
 
     def __len__(self):
         return len(self.trainY) if self.train else len(self.testY)
@@ -249,14 +261,42 @@ class TagDataset(Dataset):
 
 batch_size = 32
 
+
 # todo: write customized collate_fn to get to equal size
+def collate_fn(batch):
+    def helper(target, batch):
+        if target == 'X':
+            dic = vocab
+            list_sentence = [item[0] for item in batch]
+            list_sentence = [[dic[word] for word in sentence] for sentence in list_sentence]
+        else:
+            dic = tags
+            list_sentence = [item[1] for item in batch]
+            list_sentence = [[dic[word] for word in sentence] for sentence in list_sentence]
+        length_list = [len(sentence) for sentence in list_sentence]
+        max_length = max(length_list)
+        batch_size = len(list_sentence)
+        pad_token = dic['<PAD>']
+        # init tensors of ones with batch_size * max_length
+        result = np.ones((batch_size, max_length)) * pad_token
+        # populate the result
+        for i, length in enumerate(length_list):
+            sequence = list_sentence[i]
+            result[i][0:length] = sequence
+        return torch.from_numpy(result)
+
+    return [helper('X', batch), helper('Y', batch)]
+
+
 train_loader = DataLoader(TagDataset(train=True),
                           batch_size=batch_size,
                           # num_workers=8, Mac M1 cannot use this
+                          collate_fn=collate_fn,
                           shuffle=False)
 test_loader = DataLoader(TagDataset(train=False),
                          batch_size=batch_size,
                          # num_workers=8, Mac M1 cannot use this
+                         collate_fn=collate_fn,
                          shuffle=False)
 
 
@@ -274,18 +314,18 @@ def train(model, lr, momemtum, num_epoch=1):
     iters, losses, train_acc, test_acc = [], [], [], []
 
     # training
-    n = 0 # number of iterations
+    n = 0  # number of iterations
     for epoch in range(num_epoch):
         for batch_idx, (data, target) in enumerate(train_loader):
-            out = model(data)               # forward pass
+            out = model(data)  # forward pass
             loss = model.loss(out, target)  # compute the loss
-            loss.backward()                 # backwardpass (compute parameter updates)
-            optimizer.step()                # make the update to each parameter
+            loss.backward()  # backwardpass (compute parameter updates)
+            optimizer.step()  # make the update to each parameter
             optimizer.zero_grad()
 
             if batch_idx % 1000 == 0:
                 print(f"Epoch: {epoch}; Batch: {batch_idx}; "
-                      f"Loss: {float(loss)/batch_size}")
+                      f"Loss: {float(loss) / batch_size}")
 
             # save the current training log
             iters.append(n)
@@ -293,9 +333,6 @@ def train(model, lr, momemtum, num_epoch=1):
             train_acc.append(get_accuracy(model, train=True))
             test_acc.append(get_accuracy(model, train=False))
             n += 1
-
-
-
 
 
 class MyTestCase(unittest.TestCase):
@@ -309,6 +346,8 @@ if __name__ == '__main__':
     _, words_lst, tags_lst = split_text("wsj1-18.training")
     tags = dict(zip(sorted(set(tags_lst)), np.arange(len(set(tags_lst)))))
     tags['<PAD>'] = 912344
+    vocab = dict(zip(sorted(set(words_lst)), np.arange(len(set(words_lst)))))
+    vocab['<PAD>'] = 912344
     weighted_matrix = torch.load("weighed_matrix.pt")
     embedding_layer_const = create_emb_layer(weighted_matrix)
     nb_layers = 2
@@ -320,26 +359,29 @@ if __name__ == '__main__':
         ("The dog ate the apple".split(), ["DET", "NN", "V", "DET", "NN"]),
         ("Everybody read that book".split(), ["NN", "V", "DET", "NN"])
     ]
-
-    batch_in = torch.tensor([[[4],
-                              [5],
-                              [912344],
-                              [912344]],
-
-                             [[6],
-                              [912344],
-                              [912344],
-                              [912344]],
-
-                             [[7],
-                              [8],
-                              [9],
-                              [10]]])
-    Y = [["CC", "CD", "DT"], ["EX"], ["JJ", "IN", "JJ", "JJR"]]
-    model = LSTM(nb_layers=nb_layers,
-                 batch_size=batch_size,
-                 nb_lstm_units=nb_lstm_units,
-                 embedding_layer=embedding_layer_const,
-                 bidirectional=False)
-    out = model(batch_in)
-    loss = model.loss(out, Y)
+    toy_training_1 = [
+        "The dog ate the apple".split(),
+        "Everybody read that book".split()]
+    x, y = next(iter(train_loader))
+    # batch_in = torch.tensor([[[4],
+    #                           [5],
+    #                           [912344],
+    #                           [912344]],
+    #
+    #                          [[6],
+    #                           [912344],
+    #                           [912344],
+    #                           [912344]],
+    #
+    #                          [[7],
+    #                           [8],
+    #                           [9],
+    #                           [10]]])
+    # Y = [["CC", "CD", "DT"], ["EX"], ["JJ", "IN", "JJ", "JJR"]]
+    # model = LSTM(nb_layers=nb_layers,
+    #              batch_size=batch_size,
+    #              nb_lstm_units=nb_lstm_units,
+    #              embedding_layer=embedding_layer_const,
+    #              bidirectional=False)
+    # out = model(batch_in)
+    # loss = model.loss(out, Y)
