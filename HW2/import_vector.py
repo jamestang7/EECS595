@@ -126,6 +126,18 @@ def prepare_seq(seq_list, dictionary):
     return padded
 
 
+
+
+def get_length_tensor(batch, padding_idx):
+    index = batch.size(0)
+    result = []
+    for i in range(index):
+        sentence = batch[i]
+        length = len(torch.nonzero(sentence != padding_idx)) # grab ith tensor's length
+        result.append(length)
+    return result
+
+
 class LSTM(nn.Module):
     def __init__(self, nb_layers, batch_size, nb_lstm_units, embedding_layer,
                  bidirectional=False,
@@ -174,13 +186,11 @@ class LSTM(nn.Module):
                                        , self.nb_tags)
 
     def forward(self, input):
-        # todo: transform input tuples of strings into list of indices
 
         # init hidden layers and input sequence length
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
         c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
-        input_lengths = torch.all(input != self.padding_idx, dim=2) \
-            .sum(dim=1).flatten()
+        input_lengths = get_length_tensor(input, padding_idx=self.padding_idx)
 
         # -------------------
         # 1. embed the input
@@ -259,10 +269,10 @@ class TagDataset(Dataset):
             return self.testX[item], self.testY[item]
 
 
-batch_size = 32
 
 
-# todo: write customized collate_fn to get to equal size
+
+#  customized collate_fn to get to equal size
 def collate_fn(batch):
     def helper(target, batch):
         if target == 'X':
@@ -287,7 +297,7 @@ def collate_fn(batch):
 
     return [helper('X', batch), helper('Y', batch)]
 
-
+batch_size = 32
 train_loader = DataLoader(TagDataset(train=True),
                           batch_size=batch_size,
                           # num_workers=8, Mac M1 cannot use this
@@ -352,7 +362,7 @@ if __name__ == '__main__':
     embedding_layer_const = create_emb_layer(weighted_matrix)
     nb_layers = 2
     nb_lstm_units = 32
-    batch_size = 3
+    batch_size = 32
     seq_len = 4
     padding_idx = 912344
     toy_training = [
@@ -378,10 +388,13 @@ if __name__ == '__main__':
     #                           [9],
     #                           [10]]])
     # Y = [["CC", "CD", "DT"], ["EX"], ["JJ", "IN", "JJ", "JJR"]]
-    # model = LSTM(nb_layers=nb_layers,
-    #              batch_size=batch_size,
-    #              nb_lstm_units=nb_lstm_units,
-    #              embedding_layer=embedding_layer_const,
-    #              bidirectional=False)
-    # out = model(batch_in)
-    # loss = model.loss(out, Y)
+    model = LSTM(nb_layers=nb_layers,
+                 batch_size=batch_size,
+                 nb_lstm_units=nb_lstm_units,
+                 embedding_layer=embedding_layer_const,
+                 bidirectional=False)
+    out = model(x)
+    print(f"out dim {out.size()} \n Out: {out}")
+
+    loss = model.loss(out, y)
+    print(f"loss: ".format(loss))
