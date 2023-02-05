@@ -322,10 +322,13 @@ test_loader = DataLoader(TagDataset(train=False),
 # todo: accuracy computation
 def get_accuracy(model, train):
     data = train_loader if train else test_loader
-
     correct, total = 0, 0
     for X, labels in data:
+        tag_padding_token = tags['<PAD>']
         y_pred = model(X)
+        mask = (labels < tag_padding_token)
+        y_pred = F.softmax(y_pred, dim=2) # change into probability
+
 
 
 def train(model, lr, momemtum, num_epoch=1):
@@ -342,7 +345,7 @@ def train(model, lr, momemtum, num_epoch=1):
             optimizer.step()  # make the update to each parameter
             optimizer.zero_grad()
 
-            if batch_idx % 1000 == 0:
+            if batch_idx % 100 == 0:
                 print(f"Epoch: {epoch}; Batch: {batch_idx}; "
                       f"Loss: {float(loss) / batch_size}")
 
