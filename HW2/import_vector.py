@@ -24,7 +24,13 @@ SEED = 1234
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
-device = torch.device("mps")
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+elif torch.has_mps():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
 
 def load_embedding(filename='glove.6B.50d.txt'):
     """
