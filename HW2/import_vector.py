@@ -24,7 +24,7 @@ SEED = 1234
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
-
+device = torch.device("mps")
 
 def load_embedding(filename='glove.6B.50d.txt'):
     """
@@ -128,14 +128,13 @@ def prepare_seq(seq_list, dictionary):
     return padded
 
 
-
-
 def get_length_tensor(batch, padding_idx=912344):
     index = batch.size(0)
     result = []
     for i in range(index):
         sentence = batch[i]
-        length = len(torch.nonzero(sentence != padding_idx)) # grab ith tensor's length
+        length = len(
+            torch.nonzero(sentence != padding_idx))  # grab ith tensor's length
         result.append(length)
     return result
 
@@ -188,7 +187,6 @@ class LSTM(nn.Module):
                                        , self.nb_tags)
 
     def forward(self, input, *args, **kwargs):
-
         # init hidden layers and input sequence length
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
         c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
@@ -215,8 +213,10 @@ class LSTM(nn.Module):
         # -------------------
         # 3.  Apply FC linear layer
         # linear layer
-        out = out.view(-1,out.size(-1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
-        out = self.hidden_to_tag(out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
+        out = out.view(-1, out.size(
+            -1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
+        out = self.hidden_to_tag(
+            out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
 
         # reshape into (batch_size,  seq_len, nb_lstm_units)
         out = out.view(self.batch_size, -1, self.nb_tags)
@@ -241,7 +241,6 @@ class LSTM(nn.Module):
         # Y = Y[mask_idx].squeeze(1)
         # loss = nn.NLLLoss()
         # result = loss(Y_hat, Y)
-
 
         ### second approac using ignore_idx = 45
         ### flatten Y_hat and apply log_softmax
@@ -278,20 +277,31 @@ class TagDataset(Dataset):
             return self.testX[item], self.testY[item]
 
 
-
-
-
 #  customized collate_fn to get to equal size
 def collate_fn(batch):
     def helper(target, batch):
         if target == 'X':
             dic = vocab
             list_sentence = [item[0] for item in batch]
-            list_sentence = [[dic[word] for word in sentence] for sentence in list_sentence]
         else:
             dic = tags
             list_sentence = [item[1] for item in batch]
-            list_sentence = [[dic[word] for word in sentence] for sentence in list_sentence]
+        # if test not in training dic
+        try:
+            list_sentence = [[dic[word] for word in sentence] for sentence in
+                             list_sentence]
+        except:
+            list_sentence_temp = []
+            for sentence in list_sentence:
+                _ = []
+                for word in sentence:
+                    try:
+                        temp = dic[word]
+                    except:
+                        temp = dic['James']
+                    _.append(temp)
+                list_sentence_temp.append(_)
+                list_sentence = list_sentence_temp
         length_list = [len(sentence) for sentence in list_sentence]
         max_length = max(length_list)
         batch_size = len(list_sentence)
@@ -306,48 +316,58 @@ def collate_fn(batch):
 
     return [helper('X', batch), helper('Y', batch)]
 
-batch_size = 32
+
+batch_size = 8
 train_loader = DataLoader(TagDataset(train=True),
                           batch_size=batch_size,
                           # num_workers=8, Mac M1 cannot use this
                           collate_fn=collate_fn,
-                          shuffle=False)
+                          shuffle=False,
+                          drop_last=True)
 test_loader = DataLoader(TagDataset(train=False),
                          batch_size=batch_size,
                          # num_workers=8, Mac M1 cannot use this
                          collate_fn=collate_fn,
-                         shuffle=False)
+                         shuffle=False,
+                         drop_last=True)
 
 
-# todo: accuracy computation
+# done: accuracy computation
 def get_accuracy(model, train):
     data = train_loader if train else test_loader
     correct, total = 0, 0
+    model = model.to(device)
     for X, labels in data:
+        X, labels = X.to(device), labels.to(device)
         tag_padding_token = tags['<PAD>']
         y_pred = model(X)
+        y_pred = F.softmax(y_pred, dim=2)  # change into probability
+        # select the maximum probablilty in dim2, out of all tags
+        y_pred = y_pred.max(dim=2)[1]
+        # flatten all prediction
+        y_pred, labels = y_pred.flatten(), labels.flatten()
         mask = (labels < tag_padding_token)
-        y_pred = F.softmax(y_pred, dim=2) # change into probability
-
+        y_pred, labels = y_pred[mask], labels[mask]
+        correct += labels.eq(y_pred).sum().item()
+        total += len(mask)
+    return correct / total
 
 
 def train(model, lr, momemtum, num_epoch=1):
-    optimizer = optim.SGD(lr=lr, momentum=momemtum)
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momemtum)
     iters, losses, train_acc, test_acc = [], [], [], []
-
+    model = model.to(device=device)
     # training
     n = 0  # number of iterations
     for epoch in range(num_epoch):
         for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
+            print("Batch:{}".format(batch_idx+1))
             out = model(data)  # forward pass
             loss = model.loss(out, target)  # compute the loss
             loss.backward()  # backwardpass (compute parameter updates)
             optimizer.step()  # make the update to each parameter
             optimizer.zero_grad()
-
-            if batch_idx % 100 == 0:
-                print(f"Epoch: {epoch}; Batch: {batch_idx}; "
-                      f"Loss: {float(loss) / batch_size}")
 
             # save the current training log
             iters.append(n)
@@ -355,6 +375,29 @@ def train(model, lr, momemtum, num_epoch=1):
             train_acc.append(get_accuracy(model, train=True))
             test_acc.append(get_accuracy(model, train=False))
             n += 1
+            # print result
+            print(f"Epoch: {epoch + 1}; Batch: {batch_idx + 1}; "
+                  f"Loss: {float(loss) / batch_size};"
+                  f"Training Acc:{train_acc[-1]};"
+                  f"Testing Acc:{test_acc[-1]}")
+
+    # plotting
+    plt.title("Training Curve")
+    plt.plot(iters, losses, label="Train")
+    plt.xlabel("Iterations")
+    plt.ylabel("Loss")
+    plt.show()
+
+    plt.title("Training/Testing Curve with Accuracy")
+    plt.plot(iters, train_acc, label="Train")
+    plt.plot(iters, train_acc, label="Test")
+    plt.xlabel("Iterations")
+    plt.ylabel("Accuracy")
+    plt.legend(loc="best")
+    plt.show()
+
+    print("Final training Accuracy: {:.2%}".format(train_acc[-1]))
+    print("Final testing Accuracy: {:.2%}".format(test_acc[-1]))
 
 
 class MyTestCase(unittest.TestCase):
@@ -364,6 +407,7 @@ class MyTestCase(unittest.TestCase):
 
 if __name__ == '__main__':
     ### transform text into list of words
+
     df = pd.read_pickle('glove.pkl')
     _, words_lst, tags_lst = split_text("wsj1-18.training")
     tags = dict(zip(sorted(set(tags_lst)), np.arange(len(set(tags_lst)))))
@@ -373,41 +417,51 @@ if __name__ == '__main__':
     weighted_matrix = torch.load("weighed_matrix.pt")
     embedding_layer_const = create_emb_layer(weighted_matrix)
     nb_layers = 2
-    nb_lstm_units = 32
-    batch_size = 32
-    seq_len = 4
+    nb_lstm_units = 64
+    batch_size = 8
+    seq_len = 30
     padding_idx = 912344
-    toy_training = [
-        ("The dog ate the apple".split(), ["DET", "NN", "V", "DET", "NN"]),
-        ("Everybody read that book".split(), ["NN", "V", "DET", "NN"])
-    ]
-    toy_training_1 = [
-        "The dog ate the apple".split(),
-        "Everybody read that book".split()]
-    x, y = next(iter(train_loader))
-    # batch_in = torch.tensor([[[4],
-    #                           [5],
-    #                           [912344],
-    #                           [912344]],
-    #
-    #                          [[6],
-    #                           [912344],
-    #                           [912344],
-    #                           [912344]],
-    #
-    #                          [[7],
-    #                           [8],
-    #                           [9],
-    #                           [10]]])
-    # Y = [["CC", "CD", "DT"], ["EX"], ["JJ", "IN", "JJ", "JJR"]]
     model = LSTM(nb_layers=nb_layers,
                  batch_size=batch_size,
                  nb_lstm_units=nb_lstm_units,
                  embedding_layer=embedding_layer_const,
                  bidirectional=False)
-    out = model(x)
-    print(f"out dim {out.size()} \n Out: {out}")
-    # out dim torch.Size([32, 52, 45])
-    # y.shape : [32, 52]
-    loss = model.loss(out, y)
-    print(f"loss: ".format(loss.item()))
+    lr = 1e-3
+    momentum = 0.9
+    num_epoch = 5
+    train(model=model, lr=lr, momemtum=momentum, num_epoch=num_epoch)
+
+    # toy_training = [
+    #     ("The dog ate the apple".split(), ["DET", "NN", "V", "DET", "NN"]),
+    #     ("Everybody read that book".split(), ["NN", "V", "DET", "NN"])
+    # ]
+    # toy_training_1 = [
+    #     "The dog ate the apple".split(),
+    #     "Everybody read that book".split()]
+    # x, y = next(iter(train_loader))
+    # # batch_in = torch.tensor([[[4],
+    # #                           [5],
+    # #                           [912344],
+    # #                           [912344]],
+    # #
+    # #                          [[6],
+    # #                           [912344],
+    # #                           [912344],
+    # #                           [912344]],
+    # #
+    # #                          [[7],
+    # #                           [8],
+    # #                           [9],
+    # #                           [10]]])
+    # # Y = [["CC", "CD", "DT"], ["EX"], ["JJ", "IN", "JJ", "JJR"]]
+    # model = LSTM(nb_layers=nb_layers,
+    #              batch_size=batch_size,
+    #              nb_lstm_units=nb_lstm_units,
+    #              embedding_layer=embedding_layer_const,
+    #              bidirectional=False)
+    # out = model(x)
+    # print(f"out dim {out.size()} \n Out: {out}")
+    # # out dim torch.Size([32, 52, 45])
+    # # y.shape : [32, 52]
+    # loss = model.loss(out, y)
+    # print(f"loss: ".format(loss.item()))
