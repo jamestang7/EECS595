@@ -41,9 +41,9 @@ def load_embedding(filename='glove.6B.50d.txt'):
     df.rename({'dim_0': 'token'}, axis=1, inplace=True)
     words = df.token.to_list()
     # add padding embedding
-    df.loc['<PAD>'] = np.zeros(50)
     df.set_index('token', inplace=True)
-    df.to_pckle("glove.pkl")
+    df.loc['<PAD>'] = np.zeros(50)
+    df.to_pickle("glove.pkl")
     return df, words
 
 
@@ -76,6 +76,8 @@ def create_emb_layer(weighted_matrix1, non_trainable=False):
     :return: emb_layer type embedding
     """
     input_shape, embedding_dim = weighted_matrix1.shape
+    if type(weighted_matrix1) == np.ndarray:
+        weighted_matrix1 = torch.from_numpy(weighted_matrix1)
     emb_layer = nn.Embedding.from_pretrained(weighted_matrix1,
                                              padding_idx=input_shape - 1)
     if non_trainable:
@@ -128,7 +130,7 @@ def prepare_seq(seq_list, dictionary):
 
 
 
-def get_length_tensor(batch, padding_idx):
+def get_length_tensor(batch, padding_idx=912344):
     index = batch.size(0)
     result = []
     for i in range(index):
@@ -185,18 +187,18 @@ class LSTM(nn.Module):
                                        else self.nb_lstm_units
                                        , self.nb_tags)
 
-    def forward(self, input):
+    def forward(self, input, *args, **kwargs):
 
         # init hidden layers and input sequence length
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
         c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
-        input_lengths = get_length_tensor(input, padding_idx=self.padding_idx)
+        input_lengths = get_length_tensor(input)
 
         # -------------------
         # 1. embed the input
         # Dim transformation: (batch_size, seq_len, 1) -> (batch_size, seq_len,
         # embedding_dim)
-        input = self.dropout_layer(self.embedding_layer(input))
+        input = self.dropout_layer(self.embedding_layer(input.long()))
         input = input.squeeze(2)
         # -------------------
         # 2.  Run through LSTM
@@ -213,33 +215,40 @@ class LSTM(nn.Module):
         # -------------------
         # 3.  Apply FC linear layer
         # linear layer
-        out = out.view(-1,
-                       out.size(
-                           -1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
-        out = self.hidden_to_tag(
-            out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
+        out = out.view(-1,out.size(-1))  # (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
+        out = self.hidden_to_tag(out)  # (batch_size * seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_tags)
 
         # reshape into (batch_size,  seq_len, nb_lstm_units)
         out = out.view(self.batch_size, -1, self.nb_tags)
         # -------------------
         # 4.  softmax to transfer it to probability
-        Y_hat = F.log_softmax(out.float(), dim=2)
-        return Y_hat
+        # Y_hat = F.log_softmax(out.float(), dim=2)
+        return out
 
     def loss(self, Y_hat, Y):
         # NLL(tensor log_softmax output, target index list)
         # flatten out all labels
-        Y = prepare_seq(Y, self.tags)  # convert labels into number by tag dict
-        Y = Y.flatten()
-        # flatten all predictions
-        Y_hat = Y_hat.view(-1, len(self.tags) - 1)
-        # create a mask that filter '<PAD>;
+        ## next line deprecated because Y is already padded in data loader
+        # Y = prepare_seq(Y, self.tags)  # convert labels into number by tag dict
+        # Y = Y.flatten()
+        # # flatten all predictions
+        # Y_hat = Y_hat.view(-1, len(self.tags) - 1)
+        # # create a mask that filter '<PAD>;
         tag_token = self.tags['<PAD>']
-        mask = (Y < tag_token)
-        mask_idx = torch.nonzero(mask.float())
-        Y_hat = Y_hat[mask_idx].squeeze(1)
-        Y = Y[mask_idx].squeeze(1)
-        loss = nn.NLLLoss()
+        # mask = (Y < tag_token)
+        # mask_idx = torch.nonzero(mask.float())
+        # Y_hat = Y_hat[mask_idx].squeeze(1)
+        # Y = Y[mask_idx].squeeze(1)
+        # loss = nn.NLLLoss()
+        # result = loss(Y_hat, Y)
+
+
+        ### second approac using ignore_idx = 45
+        ### flatten Y_hat and apply log_softmax
+        Y_hat = Y_hat.view(-1, tag_token).float()
+        Y_hat = F.log_softmax(Y_hat, dim=1).double()
+        Y = Y.flatten().long()
+        loss = nn.NLLLoss(ignore_index=tag_token)
         result = loss(Y_hat, Y)
         return result
 
@@ -355,7 +364,7 @@ if __name__ == '__main__':
     df = pd.read_pickle('glove.pkl')
     _, words_lst, tags_lst = split_text("wsj1-18.training")
     tags = dict(zip(sorted(set(tags_lst)), np.arange(len(set(tags_lst)))))
-    tags['<PAD>'] = 912344
+    tags['<PAD>'] = 45
     vocab = dict(zip(sorted(set(words_lst)), np.arange(len(set(words_lst)))))
     vocab['<PAD>'] = 912344
     weighted_matrix = torch.load("weighed_matrix.pt")
@@ -395,6 +404,7 @@ if __name__ == '__main__':
                  bidirectional=False)
     out = model(x)
     print(f"out dim {out.size()} \n Out: {out}")
-
+    # out dim torch.Size([32, 52, 45])
+    # y.shape : [32, 52]
     loss = model.loss(out, y)
-    print(f"loss: ".format(loss))
+    print(f"loss: ".format(loss.item()))
