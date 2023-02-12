@@ -26,7 +26,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 if torch.cuda.is_available():
     device = torch.device('cuda')
-elif torch.has_mps():
+elif torch.has_mps:
     device = torch.device("mps")
 else:
     device = torch.device("cpu")
@@ -194,8 +194,9 @@ class LSTM(nn.Module):
 
     def forward(self, input, *args, **kwargs):
         # init hidden layers and input sequence length
-        h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
-        c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units)
+        input.to(device)
+        h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units).to(device)
+        c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units).to(device)
         input_lengths = get_length_tensor(input)
 
         # -------------------
@@ -405,10 +406,6 @@ def train(model, lr, momemtum, num_epoch=1):
     print("Final training Accuracy: {:.2%}".format(train_acc[-1]))
     print("Final testing Accuracy: {:.2%}".format(test_acc[-1]))
 
-
-class MyTestCase(unittest.TestCase):
-    def test_something(self):
-        self.assertEqual(True, False)  # add assertion here
 
 
 if __name__ == '__main__':
