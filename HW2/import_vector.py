@@ -88,6 +88,7 @@ def create_emb_layer(weighted_matrix1, non_trainable=False):
                                              padding_idx=input_shape - 1)
     if non_trainable:
         emb_layer.weight.requires_grad = False
+    emb_layer.to(device)
     return emb_layer
 
 
@@ -130,7 +131,7 @@ def prepare_seq(seq_list, dictionary):
     padded = nn.utils.rnn.pad_sequence(embedded,
                                        batch_first=True,
                                        padding_value=dictionary['<PAD>'])
-    print(padded)
+    padded.to(device)
     return padded
 
 
@@ -198,7 +199,7 @@ class LSTM(nn.Module):
         h0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units).to(device)
         c0 = torch.rand(self.nb_layers, input.size(0), self.nb_lstm_units).to(device)
         input_lengths = get_length_tensor(input)
-
+        input_lengths = torch.tensor(input_lengths).to(device)
         # -------------------
         # 1. embed the input
         # Dim transformation: (batch_size, seq_len, 1) -> (batch_size, seq_len,
@@ -410,7 +411,7 @@ def train(model, lr, momemtum, num_epoch=1):
 
 if __name__ == '__main__':
     ### transform text into list of words
-
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
     df = pd.read_pickle('glove.pkl')
     _, words_lst, tags_lst = split_text("wsj1-18.training")
     tags = dict(zip(sorted(set(tags_lst)), np.arange(len(set(tags_lst)))))
