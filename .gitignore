@@ -6,7 +6,7 @@ find . -size + 100M
 */*.truth
 */*.txt
 
+weighed_matrix.pt
 *.pt
-**/*.pt
 *.zip
 **/*.zip
